@@ -174,7 +174,7 @@ fn preprocess(req: &GameMoveRequest) -> (Array4<f32>, Array2<f32>) {
 async fn info() -> Json<InfoResponse> {
     Json(InfoResponse {
         apiversion: "1".into(),
-        color: "#5a7576".into(),
+        color: "#D34516".into(),
         head: "cute-dragon".into(),
     })
 }
