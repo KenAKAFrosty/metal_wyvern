@@ -4,11 +4,10 @@ use axum::{
     Json, Router,
 };
 use ndarray::{Array2, Array4};
-use ort::session::Session;
+use ort::session::{builder::GraphOptimizationLevel, Session};
 use ort::value::Value;
 use serde::{Deserialize, Serialize};
-use std::sync::Arc;
-use tokio::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 #[derive(Deserialize)]
 struct Position {
@@ -168,13 +167,6 @@ fn preprocess(req: &GameMoveRequest) -> (Array4<f32>, Array2<f32>) {
     (board, metadata)
 }
 
-fn softmax(logits: &[f32]) -> Vec<f32> {
-    let max = logits.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
-    let exps: Vec<f32> = logits.iter().map(|x| (x - max).exp()).collect();
-    let sum: f32 = exps.iter().sum();
-    exps.into_iter().map(|e| e / sum).collect()
-}
-
 // ─────────────────────────────────────────────────────────────────────────────
 // Handlers
 // ─────────────────────────────────────────────────────────────────────────────
@@ -191,33 +183,52 @@ async fn handle_move(
     State(session): State<Arc<Mutex<Session>>>,
     Json(req): Json<GameMoveRequest>,
 ) -> Json<MoveResponse> {
-    let (board, metadata) = preprocess(&req);
+    // 2. Offload CPU-intensive work (Preprocessing + Inference) to a blocking thread
+    // This frees up the web server to accept new connections immediately.
+    let (best_move, shout) = tokio::task::spawn_blocking(move || {
+        // --- EVERYTHING IN HERE RUNS ON A SEPARATE THREAD ---
 
-    let board_input = Value::from_array(board).expect("failed to create board tensor");
-    let metadata_input = Value::from_array(metadata).expect("failed to create metadata tensor");
-    let mut session = session.lock().await;
-    let outputs = session
-        .run(ort::inputs!["board_input" => board_input, "metadata_input" => metadata_input])
-        .expect("inference");
+        // Preprocess (Heavy math/allocations)
+        let (board, metadata) = preprocess(&req);
 
-    let output = outputs["output"]
-        .try_extract_tensor::<f32>()
-        .expect("extract");
+        // Create Values (allocates inputs for C++)
+        let board_input = Value::from_array(board).expect("board tensor");
+        let metadata_input = Value::from_array(metadata).expect("meta tensor");
 
-    let logits: Vec<f32> = output.1.iter().cloned().collect();
-    let probs = softmax(&logits);
+        let mut session = session.lock().expect("mutex poisoned");
+        // Inference (The heaviest part)
+        // No .lock().await here! multiple threads can run this in parallel.
+        let outputs = session
+            .run(ort::inputs![
+                "board_input" => board_input,
+                "metadata_input" => metadata_input
+            ])
+            .expect("inference");
 
-    let moves = ["up", "right", "down", "left"];
-    let best = probs
-        .iter()
-        .enumerate()
-        .max_by(|a, b| a.1.partial_cmp(b.1).unwrap())
-        .map(|(i, _)| i)
-        .unwrap_or(0);
+        let output = outputs["output"]
+            .try_extract_tensor::<f32>()
+            .expect("extract");
+
+        // Argmax (Avoid calculating full Softmax/Exp if we only need the max)
+        // This is O(N) instead of O(2N) + allocs
+        let moves = ["up", "right", "down", "left"];
+
+        // Find index of max value directly from logits (no need to softmax for argmax)
+        let (best_idx, _) = output
+            .1
+            .iter()
+            .enumerate()
+            .max_by(|(_, a), (_, b)| a.partial_cmp(b).expect("NaN"))
+            .unwrap_or((0, &0.0));
+
+        (moves[best_idx].to_string(), "🐍".to_string())
+    })
+    .await
+    .expect("Blocking task failed");
 
     Json(MoveResponse {
-        r#move: moves[best].into(),
-        shout: "🐍🐍🐍🐍".into(),
+        r#move: best_move,
+        shout,
     })
 }
 
@@ -228,7 +239,9 @@ async fn handle_move(
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     ort::init().commit()?;
-    let session = Session::builder()?.commit_from_file("simple_cnn.onnx")?;
+    let session = Session::builder()?
+        .with_optimization_level(GraphOptimizationLevel::Level3)?
+        .commit_from_file("simple_cnn.onnx")?;
     let session = Arc::new(Mutex::new(session));
 
     let app = Router::new()
