@@ -215,10 +215,6 @@ async fn handle_move(
         .map(|(i, _)| i)
         .unwrap_or(0);
 
-    println!("Logits: {:?}", logits);
-    println!("Probs:  {:?}", probs);
-    println!("Move:   {}", moves[best]);
-
     Json(MoveResponse {
         r#move: moves[best].into(),
         shout: "🐍🐍🐍🐍".into(),
@@ -232,7 +228,7 @@ async fn handle_move(
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     ort::init().commit()?;
-    let session = Session::builder()?.commit_from_file("simple_cnn_prototype.onnx")?;
+    let session = Session::builder()?.commit_from_file("simple_cnn.onnx")?;
     let session = Arc::new(Mutex::new(session));
 
     let app = Router::new()
