@@ -1,22 +1,13 @@
-mod model;
-
 use axum::{
     extract::State,
     routing::{get, post},
     Json, Router,
 };
 use ndarray::{Array2, Array4};
+use ort::session::{builder::GraphOptimizationLevel, Session};
+use ort::value::Value;
 use serde::{Deserialize, Serialize};
 use std::sync::{Arc, Mutex};
-
-use burn::tensor::{Tensor, TensorData};
-use burn_ndarray::NdArray;
-use model::simple_cnn_opset16::Model;
-
-// DEFINE THE BACKEND
-// We use NdArray for pure CPU execution.
-// <f32> indicates the float precision.
-type B = NdArray<f32>;
 
 #[derive(Deserialize)]
 struct Position {
@@ -191,32 +182,46 @@ async fn info() -> Json<InfoResponse> {
 }
 
 async fn handle_move(
-    State(model): State<Arc<Mutex<Model<B>>>>,
+    State(session): State<Arc<Mutex<Session>>>,
     Json(req): Json<GameMoveRequest>,
 ) -> Json<MoveResponse> {
+    // 2. Offload CPU-intensive work (Preprocessing + Inference) to a blocking thread
+    // This frees up the web server to accept new connections immediately.
     let (best_move, shout) = tokio::task::spawn_blocking(move || {
-        let (board_ndarray, metadata_ndarray) = preprocess(&req);
+        // --- EVERYTHING IN HERE RUNS ON A SEPARATE THREAD ---
 
-        // 1. Extract shape and raw data from ndarray
-        // .into_raw_vec() is zero-copy (it consumes the ndarray) and efficient.
-        // It works perfectly because your preprocess() creates contiguous arrays.
-        let board_shape = board_ndarray.shape().to_vec();
-        let board_vec = board_ndarray.into_raw_vec();
-        let board_data = TensorData::new(board_vec, board_shape);
+        // Preprocess (Heavy math/allocations)
+        let (board, metadata) = preprocess(&req);
 
-        let meta_shape = metadata_ndarray.shape().to_vec();
-        let meta_vec = metadata_ndarray.into_raw_vec();
-        let meta_data = TensorData::new(meta_vec, meta_shape);
+        // Create Values (allocates inputs for C++)
+        let board_input = Value::from_array(board).expect("board tensor");
+        let metadata_input = Value::from_array(metadata).expect("meta tensor");
 
-        let device = Default::default();
-        let input1 = Tensor::<B, 4>::from_data(board_data, &device);
-        let input2 = Tensor::<B, 2>::from_data(meta_data, &device);
+        let mut session = session.lock().expect("mutex poisoned");
+        // Inference (The heaviest part)
+        // No .lock().await here! multiple threads can run this in parallel.
+        let outputs = session
+            .run(ort::inputs![
+                "board_input" => board_input,
+                "metadata_input" => metadata_input
+            ])
+            .expect("inference");
 
-        let model = model.lock().expect("mutex poisoned");
-        let output = model.forward(input1, input2);
+        let output = outputs["output"]
+            .try_extract_tensor::<f32>()
+            .expect("extract");
 
-        let best_idx = output.argmax(1).into_scalar() as usize;
+        // Argmax (Avoid calculating full Softmax/Exp if we only need the max)
+        // This is O(N) instead of O(2N) + allocs
         let moves = ["up", "right", "down", "left"];
+
+        // Find index of max value directly from logits (no need to softmax for argmax)
+        let (best_idx, _) = output
+            .1
+            .iter()
+            .enumerate()
+            .max_by(|(_, a), (_, b)| a.partial_cmp(b).expect("NaN"))
+            .unwrap_or((0, &0.0));
 
         (moves[best_idx].to_string(), "🐍".to_string())
     })
@@ -229,18 +234,22 @@ async fn handle_move(
     })
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Main
+// ─────────────────────────────────────────────────────────────────────────────
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    let device = burn_ndarray::NdArrayDevice::Cpu;
-
-    println!("Loading Burn model...");
-    let model: Model<B> = Model::from_file("src/model/simple_cnn_opset16", &device);
-    let model = Arc::new(Mutex::new(model));
+    ort::init().commit()?;
+    let session = Session::builder()?
+        .with_optimization_level(GraphOptimizationLevel::Level3)?
+        .commit_from_file("simple_cnn.onnx")?;
+    let session = Arc::new(Mutex::new(session));
 
     let app = Router::new()
         .route("/", get(info))
         .route("/move", post(handle_move))
-        .with_state(model);
+        .with_state(session);
 
     let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await?;
     println!("Listening on http://0.0.0.0:3000");

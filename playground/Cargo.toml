@@ -2,3 +2,8 @@
 name = "playground"
 version = "0.1.0"
 edition = "2021"
+
+
+[dependencies]
+burn.workspace = true
+burn-import = "~0.19"

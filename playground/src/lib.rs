@@ -1,3 +1,3 @@
-pub fn main() {
-    println!("Test!");
+pub fn do_thing() {
+    println!("Do thing!");
 }
