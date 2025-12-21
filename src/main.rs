@@ -176,6 +176,7 @@ async fn info() -> Json<InfoResponse> {
         apiversion: "1".into(),
         color: "#D34516".into(),
         head: "cute-dragon".into(),
+        tail: "dragon".into(),
     })
 }
 
