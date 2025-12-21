@@ -70,6 +70,7 @@ struct InfoResponse {
     apiversion: String,
     color: String,
     head: String,
+    tail: String,
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
