@@ -29,6 +29,13 @@ impl Model {
             Model::NoPool(m) => m.forward(input1, input2),
         }
     }
+
+    pub fn color(&self) -> &'static str {
+        match self {
+            Model::NoPool(_) => "#516D34",
+            Model::Original(_) => "#D34516",
+        }
+    }
 }
 
 #[derive(Deserialize)]
@@ -194,10 +201,12 @@ fn preprocess(req: &GameMoveRequest) -> (Array4<f32>, Array2<f32>) {
 // Handlers
 // ─────────────────────────────────────────────────────────────────────────────
 
-async fn info() -> Json<InfoResponse> {
+async fn handle_info( State(model_choice): State<Arc<Mutex<Model>>>) -> Json<InfoResponse> {
+    let color = model_choice.lock().expect("mutex poisoned").color();
+
     Json(InfoResponse {
         apiversion: "1".into(),
-        color: "#D34516".into(),
+        color: color.into(),
         head: "cute-dragon".into(),
         tail: "dragon".into(),
     })
@@ -279,7 +288,7 @@ async fn main() -> anyhow::Result<()> {
     let model = Arc::new(Mutex::new(model_enum));
 
     let app = Router::new()
-        .route("/", get(info))
+        .route("/", get(handle_info))
         .route("/move", post(handle_move))
         .with_state(model);
 
