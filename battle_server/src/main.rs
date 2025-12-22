@@ -269,8 +269,11 @@ async fn main() -> anyhow::Result<()> {
 
     let model_enum = match model_choice.as_str() {
         "nopool_overtrained_370k" => {
-            println!("Loading ModelNoPool from file...");
             let m = ModelNoPool::from_file("nopool_overtrained_370k", &device);
+            Model::NoPool(m)
+        },
+        "nopool_1p1M" => { 
+            let m = ModelNoPool::from_file("nopool_1p1M", &device);
             Model::NoPool(m)
         },
         "simple_cnn_opset16" => { 
