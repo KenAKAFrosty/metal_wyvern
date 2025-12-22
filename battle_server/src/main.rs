@@ -10,7 +10,8 @@ use std::sync::{Arc, Mutex};
 use burn::tensor::{Tensor, TensorData};
 use burn_ndarray::NdArray;
 
-use burn_ai_model::simple_cnn_opset16::Model;
+// use burn_ai_model::simple_cnn_opset16::Model;
+use burn_ai_model::cnn_v2::ModelNoPool as Model;
 
 // DEFINE THE BACKEND
 // We use NdArray for pure CPU execution.
@@ -233,7 +234,7 @@ async fn main() -> anyhow::Result<()> {
     let device = burn_ndarray::NdArrayDevice::Cpu;
 
     println!("Loading Burn model...");
-    let model: Model<B> = Model::from_file("simple_cnn_opset16", &device);
+    let model: Model<B> = Model::from_file("battlesnake_model_trained", &device);
     let model = Arc::new(Mutex::new(model));
 
     let app = Router::new()

@@ -12,7 +12,7 @@ use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 use std::sync::{Arc, Mutex};
 
-use burn_ai_model::simple_cnn_opset16::Model;
+use burn_ai_model::cnn_v2::ModelNoPool as Model;
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "PascalCase")]
@@ -347,7 +347,7 @@ async fn main() {
     let device = WgpuDevice::default();
     let batch_size = 64;
     let learning_rate = 1e-4;
-    let num_epochs = 3;
+    let num_epochs = 100;
     let artifact_dir = "/tmp/battlesnake-model";
 
     // Load Data
