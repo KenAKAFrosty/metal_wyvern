@@ -10,13 +10,26 @@ use std::sync::{Arc, Mutex};
 use burn::tensor::{Tensor, TensorData};
 use burn_ndarray::NdArray;
 
-// use burn_ai_model::simple_cnn_opset16::Model;
-use burn_ai_model::cnn_v2::ModelNoPool as Model;
+use burn_ai_model::simple_cnn_opset16::Model as ModelOriginal;
+use burn_ai_model::cnn_v2::ModelNoPool;
 
 // DEFINE THE BACKEND
 // We use NdArray for pure CPU execution.
 // <f32> indicates the float precision.
 type B = NdArray<f32>;
+
+enum Model { 
+    Original(ModelOriginal<B>),
+    NoPool(ModelNoPool<B>)
+}
+impl Model {
+    pub fn forward(&self, input1: Tensor<B, 4>, input2: Tensor<B, 2>) -> Tensor<B, 2> {
+        match self {
+            Model::Original(m) => m.forward(input1, input2),
+            Model::NoPool(m) => m.forward(input1, input2),
+        }
+    }
+}
 
 #[derive(Deserialize)]
 struct Position {
@@ -191,9 +204,11 @@ async fn info() -> Json<InfoResponse> {
 }
 
 async fn handle_move(
-    State(model): State<Arc<Mutex<Model<B>>>>,
+    State(model): State<Arc<Mutex<Model>>>,
     Json(req): Json<GameMoveRequest>,
 ) -> Json<MoveResponse> {
+
+    //What to do in here now???
     let (best_move, shout) = tokio::task::spawn_blocking(move || {
         let (board_ndarray, metadata_ndarray) = preprocess(&req);
 
@@ -234,7 +249,7 @@ async fn main() -> anyhow::Result<()> {
     dotenvy::dotenv().ok();
     let device = burn_ndarray::NdArrayDevice::Cpu;
 
-    let which_model = std::env::var("WHICH_MODEL")
+    let model_choice = std::env::var("WHICH_MODEL")
         .inspect_err(|e| { 
             println!("Error finding the value via 'WHICH_MODEL' env var; falling back to simple_cnn_opset16 | {}", e)
         })
@@ -243,8 +258,25 @@ async fn main() -> anyhow::Result<()> {
         })
         .unwrap_or_else(|_| "simple_cnn_opset16".to_string());
 
-    let model: Model<B> = Model::from_file(&which_model, &device);
-    let model = Arc::new(Mutex::new(model));
+    let model_enum = match model_choice.as_str() {
+        "battlesnake_model_trained" => {
+            println!("Loading ModelNoPool from file...");
+            let m = ModelNoPool::from_file("battlesnake_model_trained", &device);
+            Model::NoPool(m)
+        },
+        "simple_cnn_opset16" => { 
+            let m = ModelOriginal::from_file("simple_cnn_opset16", &device);
+            Model::Original(m)
+        },
+        _ => {
+            println!("Unrecognized model choice, falling back to simple_cnn_opset16");
+            let m = ModelOriginal::from_file("simple_cnn_opset16", &device);
+            Model::Original(m)
+        }
+    };
+
+    // 5. Wrap in Arc/Mutex
+    let model = Arc::new(Mutex::new(model_enum));
 
     let app = Router::new()
         .route("/", get(info))

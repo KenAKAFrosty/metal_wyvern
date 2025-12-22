@@ -218,18 +218,6 @@ pub async fn get_game_training_data(
     Ok(Some(training_examples))
 }
 
-// Usage Example
-#[tokio::main]
-async fn _main() {
-    // Example Game ID
-    let id = "e36e3b2b-4026-4448-9c6b-737752766324";
-    match get_game_training_data(id).await {
-        Ok(Some(data)) => println!("Success! Got {} examples.", data.len()),
-        Ok(None) => println!("Game did not have a unique winner."),
-        Err(e) => eprintln!("Error: {}", e),
-    }
-}
-
 const DB_PATH: &str = "../battlesnake_data.db";
 
 #[tokio::main]
@@ -242,7 +230,7 @@ async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
 
     // 2. Step A: Scrape Leaderboard for New IDs
     println!("--- Step 1: Scraping Leaderboard ---");
-    scrape_leaderboard_ids(GameMode::Standard).await?;
+    scrape_leaderboard_ids(GameMode::Duel).await?;
 
     // 3. Step B: Process Pending Games
     println!("--- Step 2: Processing Pending Games ---");
@@ -363,7 +351,7 @@ async fn get_top_player_names(client: &Client, count: usize, game_mode: GameMode
     };
     let url = format!("https://play.battlesnake.com/leaderboard/{}", suffix);
     let html = client.get(url).send().await?.text().await?;
-    let re = Regex::new(r"/leaderboard/standard/([^/]+)/stats")?;
+    let re = Regex::new(&format!(r"/leaderboard/{}/([^/]+)/stats", suffix))?;
     Ok(re.captures_iter(&html).map(|c| c[1].to_string()).take(count).collect())
 }
 
