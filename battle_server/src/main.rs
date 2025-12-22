@@ -231,10 +231,19 @@ async fn handle_move(
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    dotenvy::dotenv().ok();
     let device = burn_ndarray::NdArrayDevice::Cpu;
 
-    println!("Loading Burn model...");
-    let model: Model<B> = Model::from_file("battlesnake_model_trained", &device);
+    let which_model = std::env::var("WHICH_MODEL")
+        .inspect_err(|e| { 
+            println!("Error finding the value via 'WHICH_MODEL' env var; falling back to simple_cnn_opset16 | {}", e)
+        })
+        .inspect(|which_model| {
+            println!("Loading model via 'WHICH_MODEL' env var choice: {}", which_model)
+        })
+        .unwrap_or_else(|_| "simple_cnn_opset16".to_string());
+
+    let model: Model<B> = Model::from_file(&which_model, &device);
     let model = Arc::new(Mutex::new(model));
 
     let app = Router::new()

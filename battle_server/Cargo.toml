@@ -16,3 +16,4 @@ burn = { workspace = true, features = ["ndarray"] }
 burn-ndarray = "0.19"
 
 burn_ai_model = { path = "../burn_ai_model" }
+dotenvy = "0.15.7"

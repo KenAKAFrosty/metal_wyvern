@@ -6,6 +6,16 @@
 
 Step 3 - Try different training and architectures, all within Burn, updating and serving as needed
 
--   [ ] Step 3a - First, just keep exact same architecture and re-build a system for gathering/generating training data. Train one from scratch and also try continuing training on current model weights
+-   [x] Step 3a - First, just keep exact same architecture and re-build a system for gathering/generating training data. Train one from scratch and also try continuing training on current model weights
 
--   [ ] Step 3b - Then with that data available (and the pipeline for more working), try fully new architectures. Def try transformer
+-   [x] Step 3b - Then with that data available (and the pipeline for more working), try fully new architectures. Def try transformer
+
+Now actively in 3B. First trying simple things like removing MaxPool. But will be working toward fresh arch and training, like transformer and EGGROLL respectively.
+
+---
+
+#### Misc Notes
+
+> Will move this to other .md docs later if too unruly
+
+-   Best test-against team: Geriatric, @~~~~@, mark_snake
