@@ -218,7 +218,7 @@ async fn handle_move(
         let best_idx = output.argmax(1).into_scalar() as usize;
         let moves = ["up", "right", "down", "left"];
 
-        (moves[best_idx].to_string(), "🐍".to_string())
+        (moves[best_idx].to_string(), "⛓️🥚⛓️".to_string())
     })
     .await
     .expect("Blocking task failed");
