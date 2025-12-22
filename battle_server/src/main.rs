@@ -233,7 +233,7 @@ async fn main() -> anyhow::Result<()> {
     let device = burn_ndarray::NdArrayDevice::Cpu;
 
     println!("Loading Burn model...");
-    let model: Model<B> = Model::from_file("newly_trained_model_test", &device);
+    let model: Model<B> = Model::from_file("simple_cnn_opset16", &device);
     let model = Arc::new(Mutex::new(model));
 
     let app = Router::new()
