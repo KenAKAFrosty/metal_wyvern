@@ -259,9 +259,9 @@ async fn main() -> anyhow::Result<()> {
         .unwrap_or_else(|_| "simple_cnn_opset16".to_string());
 
     let model_enum = match model_choice.as_str() {
-        "battlesnake_model_trained" => {
+        "nopool_overtrained_370k" => {
             println!("Loading ModelNoPool from file...");
-            let m = ModelNoPool::from_file("battlesnake_model_trained", &device);
+            let m = ModelNoPool::from_file("nopool_overtrained_370k", &device);
             Model::NoPool(m)
         },
         "simple_cnn_opset16" => { 
