@@ -1,5 +1,3 @@
-mod model;
-
 use axum::{
     extract::State,
     routing::{get, post},
@@ -11,7 +9,8 @@ use std::sync::{Arc, Mutex};
 
 use burn::tensor::{Tensor, TensorData};
 use burn_ndarray::NdArray;
-use model::simple_cnn_opset16::Model;
+
+use burn_ai_model::simple_cnn_opset16::Model;
 
 // DEFINE THE BACKEND
 // We use NdArray for pure CPU execution.
@@ -234,7 +233,7 @@ async fn main() -> anyhow::Result<()> {
     let device = burn_ndarray::NdArrayDevice::Cpu;
 
     println!("Loading Burn model...");
-    let model: Model<B> = Model::from_file("simple_cnn_opset16", &device);
+    let model: Model<B> = Model::from_file("newly_trained_model_test", &device);
     let model = Arc::new(Mutex::new(model));
 
     let app = Router::new()
