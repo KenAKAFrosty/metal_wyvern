@@ -345,9 +345,9 @@ use burn::train::{ClassificationOutput, LearnerBuilder, TrainOutput, TrainStep, 
 #[tokio::main]
 async fn main() {
     let device = WgpuDevice::default();
-    let batch_size = 128;
+    let batch_size = 256;
     let learning_rate = 2e-4;
-    let num_epochs = 10;
+    let num_epochs = 25;
     let artifact_dir = "/tmp/battlesnake-model";
 
     // Load Data
@@ -411,7 +411,7 @@ async fn main() {
 
     model_trained
         .model
-        .save_file("v4beefbeef_232kX", &CompactRecorder::new())
+        .save_file("v4beefbeef_325kX", &CompactRecorder::new())
         .expect("Failed to save model");
 
     println!("Training complete!");

@@ -300,6 +300,10 @@ async fn main() -> anyhow::Result<()> {
             let m = ModelBeefBeef::from_file("v4beefbeef_232kX", &device);
             Model::BeefBeef(m)
         }
+        "v4beefbeef_325kX" => { 
+            let m = ModelBeefBeef::from_file("v4beefbeef_232kX", &device);
+            Model::BeefBeef(m)
+        }
         "simple_cnn_opset16" => { 
             let m = ModelOriginal::from_file("simple_cnn_opset16", &device);
             Model::Original(m)
