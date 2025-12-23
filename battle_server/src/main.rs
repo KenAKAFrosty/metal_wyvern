@@ -41,7 +41,7 @@ impl Model {
             Model::NoPool(_) => "#516D34",
             Model::Original(_) => "#D34516",
             Model::Beef(_) => "#8e16d3",
-            Model::BeefBeef(_) => "#d3c616ff"
+            Model::BeefBeef(_) => "#d3c616"
         }
     }
 }
