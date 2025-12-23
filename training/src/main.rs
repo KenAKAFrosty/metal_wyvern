@@ -12,7 +12,7 @@ use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 use std::sync::{Arc, Mutex};
 
-use burn_ai_model::cnn_v3_the_beefening::ModelBeefierCnn as Model;
+use burn_ai_model::cnn_v4_beef_to_the_future::ModelBeefierCnn as Model;
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "PascalCase")]
@@ -345,9 +345,9 @@ use burn::train::{ClassificationOutput, LearnerBuilder, TrainOutput, TrainStep, 
 #[tokio::main]
 async fn main() {
     let device = WgpuDevice::default();
-    let batch_size = 64;
-    let learning_rate = 1e-4;
-    let num_epochs = 25;
+    let batch_size = 128;
+    let learning_rate = 2e-4;
+    let num_epochs = 10;
     let artifact_dir = "/tmp/battlesnake-model";
 
     // Load Data
@@ -411,7 +411,7 @@ async fn main() {
 
     model_trained
         .model
-        .save_file("v3beef_197kX", &CompactRecorder::new())
+        .save_file("v4beefbeef_232kX", &CompactRecorder::new())
         .expect("Failed to save model");
 
     println!("Training complete!");
