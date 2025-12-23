@@ -12,7 +12,7 @@ use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 use std::sync::{Arc, Mutex};
 
-use burn_ai_model::simple_cnn_opset16::Model;
+use burn_ai_model::cnn_v3_the_beefening::ModelBeefierCnn as Model;
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "PascalCase")]
@@ -411,7 +411,7 @@ async fn main() {
 
     model_trained
         .model
-        .save_file("withpool_170k_toponly", &CompactRecorder::new())
+        .save_file("v3beef_197kX", &CompactRecorder::new())
         .expect("Failed to save model");
 
     println!("Training complete!");

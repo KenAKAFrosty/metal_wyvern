@@ -12,6 +12,7 @@ use burn_ndarray::NdArray;
 
 use burn_ai_model::simple_cnn_opset16::Model as ModelOriginal;
 use burn_ai_model::cnn_v2::ModelNoPool;
+use burn_ai_model::cnn_v3_the_beefening::ModelBeefierCnn;
 
 // DEFINE THE BACKEND
 // We use NdArray for pure CPU execution.
@@ -20,13 +21,15 @@ type B = NdArray<f32>;
 
 enum Model { 
     Original(ModelOriginal<B>),
-    NoPool(ModelNoPool<B>)
+    NoPool(ModelNoPool<B>),
+    Beef(ModelBeefierCnn<B>)
 }
 impl Model {
     pub fn forward(&self, input1: Tensor<B, 4>, input2: Tensor<B, 2>) -> Tensor<B, 2> {
         match self {
             Model::Original(m) => m.forward(input1, input2),
             Model::NoPool(m) => m.forward(input1, input2),
+            Model::Beef(m) => m.forward(input1, input2)
         }
     }
 
@@ -34,6 +37,7 @@ impl Model {
         match self {
             Model::NoPool(_) => "#516D34",
             Model::Original(_) => "#D34516",
+            Model::Beef(_) => "#8e16d3"
         }
     }
 }
@@ -284,6 +288,10 @@ async fn main() -> anyhow::Result<()> {
             let m = ModelOriginal::from_file("withpool_170k_toponly", &device);
             Model::Original(m)
         },
+        "v3beef_197kX" => { 
+            let m = ModelBeefierCnn::from_file("v3beef_197kX", &device);
+            Model::Beef(m)
+        }
         "simple_cnn_opset16" => { 
             let m = ModelOriginal::from_file("simple_cnn_opset16", &device);
             Model::Original(m)
