@@ -230,7 +230,7 @@ async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
 
     // 2. Step A: Scrape Leaderboard for New IDs
     println!("--- Step 1: Scraping Leaderboard ---");
-    scrape_leaderboard_ids(GameMode::Duel).await?;
+    scrape_leaderboard_ids(GameMode::Standard).await?;
 
     // 3. Step B: Process Pending Games
     println!("--- Step 2: Processing Pending Games ---");
@@ -279,7 +279,7 @@ fn init_db(path: &str) -> Result<(), Box<dyn Error + Send + Sync>> {
 async fn scrape_leaderboard_ids(game_mode: GameMode) -> Result<(), Box<dyn Error + Send + Sync>> {
     let client = Client::new();
 
-    let players = get_top_player_names(&client, 50, game_mode.clone()).await?;
+    let players = get_top_player_names(&client, 4, game_mode.clone()).await?;
     println!("Found {} players on leaderboard.", players.len());
 
     let db_path = DB_PATH.to_string();

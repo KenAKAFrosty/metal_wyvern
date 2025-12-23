@@ -276,6 +276,10 @@ async fn main() -> anyhow::Result<()> {
             let m = ModelNoPool::from_file("nopool_1p1M", &device);
             Model::NoPool(m)
         },
+        "nopool_170k_toponly" => { 
+            let m = ModelNoPool::from_file("nopool_170k_toponly", &device);
+            Model::NoPool(m)
+        },
         "simple_cnn_opset16" => { 
             let m = ModelOriginal::from_file("simple_cnn_opset16", &device);
             Model::Original(m)
