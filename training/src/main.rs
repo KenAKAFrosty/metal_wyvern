@@ -1,3 +1,5 @@
+#![recursion_limit = "256"]
+
 use burn::backend::wgpu::WgpuDevice;
 use burn::backend::{Autodiff, Wgpu};
 use burn::data::dataloader::batcher::Batcher;
@@ -8,12 +10,15 @@ use burn::prelude::*;
 use burn::record::{CompactRecorder, Recorder};
 use burn::tensor::backend::AutodiffBackend;
 use burn::train::metric::{AccuracyMetric, LossMetric};
+use burn::train::{ClassificationOutput, LearnerBuilder, TrainOutput, TrainStep, ValidStep};
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
-use std::sync::{Arc, Mutex};
 
-use burn_ai_model::cnn_v4_beef_to_the_future::ModelBeefierCnn as Model;
+use burn_ai_model::transformer::{BattleModel, BattleModelConfig};
 
+// ------------------------------------------------------------------
+// 1. Data Structures (Unchanged)
+// ------------------------------------------------------------------
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "PascalCase")]
 struct Position {
@@ -72,16 +77,14 @@ struct TrainingExample {
 }
 
 // ------------------------------------------------------------------
-// 2. Dataset
+// 2. Dataset (Unchanged)
 // ------------------------------------------------------------------
-
 #[derive(Clone)]
 struct BattlesnakeDataset {
     items: Vec<TrainingExample>,
 }
 
 impl BattlesnakeDataset {
-    // UPDATED: Now takes a Vec directly, logic moved to main or helper
     pub fn new(items: Vec<TrainingExample>) -> Self {
         Self { items }
     }
@@ -91,20 +94,17 @@ impl Dataset<TrainingExample> for BattlesnakeDataset {
     fn get(&self, index: usize) -> Option<TrainingExample> {
         self.items.get(index).cloned()
     }
-
     fn len(&self) -> usize {
         self.items.len()
     }
 }
 
-// Helper to load from DB
 fn load_data(db_path: &str) -> Vec<TrainingExample> {
     println!("Loading data from {}...", db_path);
     let conn = Connection::open(db_path).expect("Could not open DB");
     let mut stmt = conn
         .prepare("SELECT data_json FROM training_examples")
         .expect("Table not found");
-
     let items_iter = stmt
         .query_map([], |row| {
             let json: String = row.get(0)?;
@@ -123,10 +123,9 @@ fn load_data(db_path: &str) -> Vec<TrainingExample> {
 }
 
 // ------------------------------------------------------------------
-// 3. Batcher
+// 3. Batcher (THE BIG REWRITE)
 // ------------------------------------------------------------------
 
-// Define specific backends to avoid ambiguity
 type MyBackend = Wgpu;
 type MyAutodiffBackend = Autodiff<MyBackend>;
 
@@ -137,25 +136,28 @@ struct BattlesnakeBatcher<B: Backend> {
 
 #[derive(Clone, Debug)]
 struct BattlesnakeBatch<B: Backend> {
-    board: Tensor<B, 4>,        // [Batch, 8, 11, 11]
-    metadata: Tensor<B, 2>,     // [Batch, 8]
-    targets: Tensor<B, 1, Int>, // [Batch]
+    // [Batch, 121, 22] - The sequence of tiles
+    tiles: Tensor<B, 3>,
+    // [Batch, 4] - The global metadata
+    metadata: Tensor<B, 2>,
+    targets: Tensor<B, 1, Int>,
 }
 
-const CHANNELS: usize = 8;
-const HEIGHT: usize = 11;
-const WIDTH: usize = 11;
-const METADATA_COUNT: usize = 8;
+const GRID_SIZE: usize = 11;
+const SEQ_LEN: usize = GRID_SIZE * GRID_SIZE; // 121
+const TILE_FEATS: usize = 22;
+const META_FEATS: usize = 4;
 
-// Helper to write to the grid (fixes Borrow Checker error)
-fn write_grid(grid: &mut [f32], ch: usize, y: i32, x: i32, val: f32, accumulate: bool) {
-    if x >= 0 && x < WIDTH as i32 && y >= 0 && y < HEIGHT as i32 {
-        let idx = (ch * HEIGHT * WIDTH) + (y as usize * WIDTH) + x as usize;
-        if accumulate {
-            grid[idx] += val;
-        } else {
-            grid[idx] = val;
-        }
+// Helper to set features in the flat vector
+// grid: flat vector of size 121 * 22
+// idx: 0..120 (tile index)
+// feat: 0..21 (feature index)
+// val: value to set
+fn set_feat(grid: &mut [f32], x: i32, y: i32, feat: usize, val: f32) {
+    if x >= 0 && x < GRID_SIZE as i32 && y >= 0 && y < GRID_SIZE as i32 {
+        let tile_idx = (y as usize * GRID_SIZE) + x as usize;
+        let vec_idx = (tile_idx * TILE_FEATS) + feat;
+        grid[vec_idx] = val;
     }
 }
 
@@ -163,144 +165,149 @@ impl<B: Backend> Batcher<B, TrainingExample, BattlesnakeBatch<B>> for Battlesnak
     fn batch(&self, items: Vec<TrainingExample>, device: &B::Device) -> BattlesnakeBatch<B> {
         let batch_size = items.len();
 
-        let mut board_data = Vec::with_capacity(batch_size * CHANNELS * HEIGHT * WIDTH);
-        let mut meta_data = Vec::with_capacity(batch_size * METADATA_COUNT);
+        let mut tiles_data = Vec::with_capacity(batch_size * SEQ_LEN * TILE_FEATS);
+        let mut meta_data = Vec::with_capacity(batch_size * META_FEATS);
         let mut targets_data = Vec::with_capacity(batch_size);
 
         for item in items {
             let w = item.game.width as usize;
             let h = item.game.height as usize;
             let area = (w * h) as f32;
-            let target_id = &item.winning_snake_id;
 
-            // --- Preprocessing ---
-            let mut grid = vec![0.0f32; CHANNELS * HEIGHT * WIDTH];
+            // 1. Prepare Tile Grid (Flat buffer)
+            let mut grid = vec![0.0f32; SEQ_LEN * TILE_FEATS];
 
-            let mut other_len_sum = 0usize;
-            let mut other_count = 0usize;
-            let mut longest_other = 0usize;
+            // Identify "Me" and "Them"
+            let target_id = &item.winning_snake_id; // We train to mimic the winner
             let mut my_snake: Option<&Snake> = None;
+            let mut enemies: Vec<&Snake> = Vec::new();
 
             for snake in &item.snakes {
-                // Filter dead snakes
                 if snake.death.is_some() {
                     continue;
-                }
-
-                let len = snake.body.len();
-                if len == 0 {
-                    continue;
-                } // Sanity check
-
-                let norm_len = len as f32 / area;
-                let norm_health = snake.health as f32 / 100.0;
-                let is_target = snake.id == *target_id;
-
-                if is_target {
+                } // Skip dead
+                if snake.id == *target_id {
                     my_snake = Some(snake);
                 } else {
-                    other_len_sum += len;
-                    other_count += 1;
-                    longest_other = longest_other.max(len);
+                    enemies.push(snake);
                 }
+            }
+
+            // --- Fill "Me" Features (Indices 0-4) ---
+            if let Some(me) = my_snake {
+                let norm_health = me.health as f32 / 100.0;
+                let norm_len = me.body.len() as f32 / area;
+
+                // Head (Idx 0)
+                if !me.body.is_empty() {
+                    set_feat(&mut grid, me.body[0].x, me.body[0].y, 0, 1.0);
+                    // Holographic stats on Head
+                    set_feat(&mut grid, me.body[0].x, me.body[0].y, 3, norm_health);
+                    set_feat(&mut grid, me.body[0].x, me.body[0].y, 4, norm_len);
+                }
+
+                // Body (Idx 1) & Tail (Idx 2)
+                for (i, part) in me.body.iter().enumerate().skip(1) {
+                    let is_tail = i == me.body.len() - 1;
+                    let feat_idx = if is_tail { 2 } else { 1 };
+
+                    set_feat(&mut grid, part.x, part.y, feat_idx, 1.0);
+                    // Holographic stats on Body parts too!
+                    set_feat(&mut grid, part.x, part.y, 3, norm_health);
+                    set_feat(&mut grid, part.x, part.y, 4, norm_len);
+                }
+            }
+
+            // --- Fill "Enemy" Features (Indices 5-19) ---
+            // We support up to 3 enemies.
+            // Sort enemies by ID to ensure consistency across frames
+            enemies.sort_by_key(|s| &s.id);
+
+            for (i, enemy) in enemies.iter().take(3).enumerate() {
+                let offset = 5 + (i * 5); // 5, 10, 15
+                let norm_health = enemy.health as f32 / 100.0;
+                let norm_len = enemy.body.len() as f32 / area;
 
                 // Head
-                let head = &snake.body[0];
-                let head_ch = if is_target { 0 } else { 1 };
-                write_grid(&mut grid, head_ch, head.y, head.x, norm_len, false);
-
-                // Body
-                let body_ch = if is_target { 2 } else { 3 };
-                for part in snake.body.iter().skip(1).take(len.saturating_sub(2)) {
-                    write_grid(&mut grid, body_ch, part.y, part.x, norm_health, false);
+                if !enemy.body.is_empty() {
+                    set_feat(&mut grid, enemy.body[0].x, enemy.body[0].y, offset + 0, 1.0);
+                    set_feat(
+                        &mut grid,
+                        enemy.body[0].x,
+                        enemy.body[0].y,
+                        offset + 3,
+                        norm_health,
+                    );
+                    set_feat(
+                        &mut grid,
+                        enemy.body[0].x,
+                        enemy.body[0].y,
+                        offset + 4,
+                        norm_len,
+                    );
                 }
-
-                // Tail
-                if let Some(tail) = snake.body.last() {
-                    let tail_ch = if is_target { 4 } else { 5 };
-                    write_grid(&mut grid, tail_ch, tail.y, tail.x, norm_health, false);
+                // Body/Tail
+                for (j, part) in enemy.body.iter().enumerate().skip(1) {
+                    let is_tail = j == enemy.body.len() - 1;
+                    let feat_idx = if is_tail { offset + 2 } else { offset + 1 };
+                    set_feat(&mut grid, part.x, part.y, feat_idx, 1.0);
+                    set_feat(&mut grid, part.x, part.y, offset + 3, norm_health);
+                    set_feat(&mut grid, part.x, part.y, offset + 4, norm_len);
                 }
             }
 
-            // Food
+            // --- Food (Idx 20) ---
             for f in &item.food {
-                write_grid(&mut grid, 6, f.y, f.x, 1.0, true);
+                set_feat(&mut grid, f.x, f.y, 20, 1.0);
             }
 
-            // Hazards
+            // --- Hazards (Idx 21) ---
             for hz in &item.hazards {
-                write_grid(&mut grid, 7, hz.y, hz.x, 1.0, true);
+                set_feat(&mut grid, hz.x, hz.y, 21, 1.0);
             }
 
-            // --- Metadata ---
+            tiles_data.extend(grid);
+
+            // 2. Prepare Metadata (4 floats)
+            // [Turn, SpawnChance, MinFood, HazardDamage]
             let fs_chance: f32 = item.game.ruleset.food_spawn_chance.parse().unwrap_or(15.0);
             let min_food: f32 = item.game.ruleset.minimum_food.parse().unwrap_or(1.0);
 
-            let food_spawn = fs_chance / 100.0;
-            let min_food_norm = min_food / area;
-            let turn_norm = item.turn as f32 / 7200.0;
+            meta_data.push((item.turn as f32 / 500.0).min(1.0)); // Turn normalized
+            meta_data.push(fs_chance / 100.0);
+            meta_data.push(min_food / area);
+            meta_data.push(0.14); // Assume 14 hazard damage (standard) normalized
 
-            let (head_x, head_y, health, target_len) = if let Some(me) = my_snake {
-                if !me.body.is_empty() {
-                    (
-                        me.body[0].x as f32 / w as f32,
-                        me.body[0].y as f32 / h as f32,
-                        me.health as f32 / 100.0,
-                        me.body.len(),
-                    )
-                } else {
-                    (0.0, 0.0, 0.0, 0)
-                }
-            } else {
-                (0.0, 0.0, 0.0, 0)
-            };
-
-            let is_longest = if target_len > longest_other { 1.0 } else { 0.0 };
-            let avg_frac = if is_longest > 0.5 && other_count > 0 {
-                (other_len_sum as f32 / other_count as f32) / target_len as f32
-            } else {
-                0.0
-            };
-
-            board_data.extend(grid);
-            meta_data.extend(vec![
-                food_spawn,
-                min_food_norm,
-                turn_norm,
-                head_x,
-                head_y,
-                health,
-                is_longest,
-                avg_frac,
-            ]);
             targets_data.push(item.label as i32);
         }
 
-        let board_shape = [batch_size, CHANNELS, HEIGHT, WIDTH];
-        let board_tensor =
-            Tensor::from_data(TensorData::new(board_data, board_shape), &self.device);
+        // Create Tensors
+        let tiles_shape = [batch_size, SEQ_LEN, TILE_FEATS];
+        let tiles = Tensor::from_data(TensorData::new(tiles_data, tiles_shape), &self.device);
 
-        let meta_shape = [batch_size, METADATA_COUNT];
-        let meta_tensor = Tensor::from_data(TensorData::new(meta_data, meta_shape), &self.device);
+        let meta_shape = [batch_size, META_FEATS];
+        let metadata = Tensor::from_data(TensorData::new(meta_data, meta_shape), &self.device);
 
-        let targets_tensor =
-            Tensor::from_data(TensorData::new(targets_data, [batch_size]), &self.device);
+        let targets = Tensor::from_data(TensorData::new(targets_data, [batch_size]), &self.device);
 
         BattlesnakeBatch {
-            board: board_tensor,
-            metadata: meta_tensor,
-            targets: targets_tensor,
+            tiles,
+            metadata,
+            targets,
         }
     }
 }
 
 // ------------------------------------------------------------------
-// 4. Training Step
+// 4. Train Step (Updated signature)
 // ------------------------------------------------------------------
 
-impl<B: AutodiffBackend> TrainStep<BattlesnakeBatch<B>, ClassificationOutput<B>> for Model<B> {
+impl<B: AutodiffBackend> TrainStep<BattlesnakeBatch<B>, ClassificationOutput<B>>
+    for BattleModel<B>
+{
     fn step(&self, batch: BattlesnakeBatch<B>) -> TrainOutput<ClassificationOutput<B>> {
-        let logits = self.forward(batch.board, batch.metadata);
+        // Forward pass now takes (Tiles, Meta)
+        let logits = self.forward(batch.tiles, batch.metadata);
 
         let loss = burn::nn::loss::CrossEntropyLossConfig::new()
             .init(&logits.device())
@@ -320,9 +327,9 @@ impl<B: AutodiffBackend> TrainStep<BattlesnakeBatch<B>, ClassificationOutput<B>>
     }
 }
 
-impl<B: Backend> ValidStep<BattlesnakeBatch<B>, ClassificationOutput<B>> for Model<B> {
+impl<B: Backend> ValidStep<BattlesnakeBatch<B>, ClassificationOutput<B>> for BattleModel<B> {
     fn step(&self, batch: BattlesnakeBatch<B>) -> ClassificationOutput<B> {
-        let logits = self.forward(batch.board, batch.metadata);
+        let logits = self.forward(batch.tiles, batch.metadata);
 
         let loss = burn::nn::loss::CrossEntropyLossConfig::new()
             .init(&logits.device())
@@ -340,39 +347,47 @@ impl<B: Backend> ValidStep<BattlesnakeBatch<B>, ClassificationOutput<B>> for Mod
 // 5. Main
 // ------------------------------------------------------------------
 
-use burn::train::{ClassificationOutput, LearnerBuilder, TrainOutput, TrainStep, ValidStep};
-
 #[tokio::main]
 async fn main() {
     let device = WgpuDevice::default();
-    let batch_size = 256;
-    let learning_rate = 2e-4;
-    let num_epochs = 25;
-    let artifact_dir = "/tmp/battlesnake-model";
+
+    // --- HYPERPARAMETERS ---
+    let batch_size = 1024;
+    let learning_rate = 9e-4;
+    let num_epochs = 100;
+
+    // Define Model Config
+    let config = BattleModelConfig {
+        d_model: 64, // Embedding size (Start small)
+        n_heads: 4,  // Attention heads
+        n_layers: 2, // Transformer layers
+        d_ff: 256,   // Feed forward inner dimension
+        num_classes: 4,
+        tile_features: 22, // Match Batcher
+        meta_features: 4,  // Match Batcher
+        grid_size: 11,
+    };
+
+    println!("Initializing Holographic Transformer...");
+    println!("Config: {:?}", config);
+
+    // Initialize Model
+    let model: BattleModel<MyAutodiffBackend> = BattleModel::new(&config, &device);
+    let optimizer = AdamWConfig::new().init();
 
     // Load Data
-    // 1. Load Data
     let mut all_data = load_data("../battlesnake_data.db");
-
-    // 2. "Hack" to skip validation time:
-    // We split off just ONE batch (64 items) to be the "Validation Set".
-    // This satisfies the Learner API but takes 0.001s to process.
     if all_data.len() <= batch_size {
-        panic!(
-            "Not enough data to run! Need at least {} items.",
-            batch_size * 2
-        );
+        panic!("Not enough data!");
     }
-    let valid_data = all_data.split_off(all_data.len() - batch_size);
-    let train_data = all_data; // The rest is training
 
-    println!("Training Set: {} items", train_data.len());
-    println!("Validation Set: {} items (Dummy split)", valid_data.len());
+    // Split Val
+    let valid_data = all_data.split_off(all_data.len() - batch_size);
+    let train_data = all_data;
 
     let dataset_train = BattlesnakeDataset::new(train_data);
     let dataset_valid = BattlesnakeDataset::new(valid_data);
 
-    // 3. Create Dataloaders
     let batcher_train = BattlesnakeBatcher::<MyAutodiffBackend> {
         device: device.clone(),
     };
@@ -388,14 +403,10 @@ async fn main() {
 
     let dataloader_valid = DataLoaderBuilder::new(batcher_valid)
         .batch_size(batch_size)
-        // No need to shuffle validation
         .num_workers(1)
         .build(dataset_valid);
 
-    // Initialize Model
-    let model: Model<MyAutodiffBackend> = Model::new(&device);
-
-    let optimizer = AdamWConfig::new().init();
+    let artifact_dir = "/tmp/battlesnake-transformer";
 
     let learner = LearnerBuilder::new(artifact_dir)
         .metric_train_numeric(AccuracyMetric::new())
@@ -403,16 +414,12 @@ async fn main() {
         .num_epochs(num_epochs)
         .build(model, optimizer, learning_rate);
 
-    // Train
-    let model_trained = learner.fit(
-        dataloader_train,
-        dataloader_valid, // FIX 3: Pass the valid dataloader here!
-    );
+    let model_trained = learner.fit(dataloader_train, dataloader_valid);
 
     model_trained
         .model
-        .save_file("v4beefbeef_325kX", &CompactRecorder::new())
+        .save_file("transformer_v1", &CompactRecorder::new())
         .expect("Failed to save model");
 
-    println!("Training complete!");
+    println!("Transformer training complete!");
 }

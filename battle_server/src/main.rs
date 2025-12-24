@@ -3,45 +3,55 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
-use ndarray::{Array2, Array4};
+use ndarray::{Array2, Array3, Array4};
 use serde::{Deserialize, Serialize};
 use std::sync::{Arc, Mutex};
-
-use burn::tensor::{Tensor, TensorData};
+use burn::module::Module;
+use burn::{record::CompactRecorder, record::Recorder, tensor::{Tensor, TensorData}};
 use burn_ndarray::NdArray;
 
 use burn_ai_model::simple_cnn_opset16::Model as ModelOriginal;
 use burn_ai_model::cnn_v2::ModelNoPool;
 use burn_ai_model::cnn_v3_the_beefening::ModelBeefierCnn;
 use burn_ai_model::cnn_v4_beef_to_the_future::ModelBeefierCnn as ModelBeefBeef;
+use burn_ai_model::transformer::{BattleModel, BattleModelConfig}; 
 
 // DEFINE THE BACKEND
 // We use NdArray for pure CPU execution.
 // <f32> indicates the float precision.
 type B = NdArray<f32>;
 
+// 1. Define a helper enum so we know what to preprocess 
+// WITHOUT locking the heavy Mutex first.
+#[derive(Clone, Copy, Debug)]
+enum ModelKind {
+    Cnn,
+    Transformer,
+}
+
+// 2. Wrap State so we can access the Kind cheaply
+#[derive(Clone)]
+struct AppState {
+    model: Arc<Mutex<Model>>,
+    kind: ModelKind,
+}
+
+
 enum Model { 
     Original(ModelOriginal<B>),
     NoPool(ModelNoPool<B>),
     Beef(ModelBeefierCnn<B>),
-    BeefBeef(ModelBeefBeef<B>)
+    BeefBeef(ModelBeefBeef<B>),
+    Transformer(BattleModel<B>)
 }
 impl Model {
-    pub fn forward(&self, input1: Tensor<B, 4>, input2: Tensor<B, 2>) -> Tensor<B, 2> {
-        match self {
-            Model::Original(m) => m.forward(input1, input2),
-            Model::NoPool(m) => m.forward(input1, input2),
-            Model::Beef(m) => m.forward(input1, input2),
-            Model::BeefBeef(m) => m.forward(input1, input2)
-        }
-    }
-
     pub fn color(&self) -> &'static str {
         match self {
             Model::NoPool(_) => "#516D34",
             Model::Original(_) => "#D34516",
             Model::Beef(_) => "#8e16d3",
-            Model::BeefBeef(_) => "#d3c616"
+            Model::BeefBeef(_) => "#d3c616",
+            Model::Transformer(_) => "#0000FF",
         }
     }
 }
@@ -205,12 +215,103 @@ fn preprocess(req: &GameMoveRequest) -> (Array4<f32>, Array2<f32>) {
     (board, metadata)
 }
 
+// Constants for Transformer
+const GRID_SIZE: usize = 11;
+const SEQ_LEN: usize = 121;
+const TILE_FEATS: usize = 22;
+const META_FEATS: usize = 4;
+
+// Helper to set features safely
+fn set_feat(grid: &mut [f32], x: i32, y: i32, feat: usize, val: f32) {
+    if x >= 0 && x < GRID_SIZE as i32 && y >= 0 && y < GRID_SIZE as i32 {
+        let tile_idx = (y as usize * GRID_SIZE) + x as usize;
+        let vec_idx = (tile_idx * TILE_FEATS) + feat;
+        grid[vec_idx] = val;
+    }
+}
+
+// THE NEW PREPROCESSOR
+fn preprocess_transformer(req: &GameMoveRequest) -> (Array3<f32>, Array2<f32>) {
+    let (w, h) = (req.board.width, req.board.height);
+    let area = (w * h) as f32;
+    
+    // 1. Tiles [1, 121, 22]
+    let mut grid = vec![0.0f32; SEQ_LEN * TILE_FEATS];
+    
+    let my_id = &req.you.id;
+    let mut enemies: Vec<&Snake> = req.board.snakes.iter()
+        .filter(|s| s.id != *my_id)
+        .collect();
+    // CRITICAL: Sort enemies by ID so they are consistent across turns
+    enemies.sort_by_key(|s| &s.id);
+
+    // --- Fill ME (Features 0-4) ---
+    let me = &req.you;
+    let norm_health = me.health as f32 / 100.0;
+    let norm_len = me.body.len() as f32 / area;
+
+    for (i, part) in me.body.iter().enumerate() {
+        let is_head = i == 0;
+        let is_tail = i == me.body.len() - 1;
+        
+        let feat_idx = if is_head { 0 } else if is_tail { 2 } else { 1 };
+        
+        set_feat(&mut grid, part.x as i32, part.y as i32, feat_idx, 1.0);
+        // Holographic stats
+        set_feat(&mut grid, part.x as i32, part.y as i32, 3, norm_health);
+        set_feat(&mut grid, part.x as i32, part.y as i32, 4, norm_len);
+    }
+
+    // --- Fill ENEMIES (Features 5-19) ---
+    for (i, enemy) in enemies.iter().take(3).enumerate() {
+        let offset = 5 + (i * 5);
+        let e_health = enemy.health as f32 / 100.0;
+        let e_len = enemy.body.len() as f32 / area;
+
+        for (j, part) in enemy.body.iter().enumerate() {
+            let is_head = j == 0;
+            let is_tail = j == enemy.body.len() - 1;
+            let feat_idx = if is_head { 0 } else if is_tail { 2 } else { 1 };
+
+            set_feat(&mut grid, part.x as i32, part.y as i32, offset + feat_idx, 1.0);
+            set_feat(&mut grid, part.x as i32, part.y as i32, offset + 3, e_health);
+            set_feat(&mut grid, part.x as i32, part.y as i32, offset + 4, e_len);
+        }
+    }
+
+    // --- Food (20) & Hazards (21) ---
+    for f in &req.board.food {
+        set_feat(&mut grid, f.x as i32, f.y as i32, 20, 1.0);
+    }
+    for hz in &req.board.hazards {
+        set_feat(&mut grid, hz.x as i32, hz.y as i32, 21, 1.0);
+    }
+
+    // 2. Metadata [1, 4]
+    // [Turn, Spawn, MinFood, Hazard]
+    let fs_chance = req.game.ruleset.settings.food_spawn_chance as f32;
+    let min_food = req.game.ruleset.settings.minimum_food as f32;
+    
+    let meta_vec = vec![
+        (req.turn as f32 / 500.0).min(1.0),
+        fs_chance / 100.0,
+        min_food / area,
+        0.14 // Hazard damage default
+    ];
+
+    let tiles_array = Array3::from_shape_vec((1, SEQ_LEN, TILE_FEATS), grid).unwrap();
+    let meta_array = Array2::from_shape_vec((1, META_FEATS), meta_vec).unwrap();
+
+    (tiles_array, meta_array)
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Handlers
 // ─────────────────────────────────────────────────────────────────────────────
 
-async fn handle_info( State(model_choice): State<Arc<Mutex<Model>>>) -> Json<InfoResponse> {
-    let color = model_choice.lock().expect("mutex poisoned").color();
+async fn handle_info(State(state): State<AppState>) -> Json<InfoResponse> {
+    // Unwrap the model from the AppState struct
+    let color = state.model.lock().expect("mutex poisoned").color();
 
     Json(InfoResponse {
         apiversion: "1".into(),
@@ -220,45 +321,96 @@ async fn handle_info( State(model_choice): State<Arc<Mutex<Model>>>) -> Json<Inf
     })
 }
 
+enum PreprocessedData {
+    Cnn { board: Array4<f32>, meta: Array2<f32> },
+    Transformer { tiles: Array3<f32>, meta: Array2<f32> },
+}
+
+fn to_tensors(b: Array4<f32>, m: Array2<f32>, device: &burn_ndarray::NdArrayDevice) -> (Tensor<B, 4>, Tensor<B, 2>) {
+    // Fix: Get shape BEFORE consuming the array into a vector
+    let b_shape = b.shape().to_vec();
+    let b_vec = b.into_raw_vec();
+    let b_tensor = Tensor::from_data(TensorData::new(b_vec, b_shape), device);
+
+    let m_shape = m.shape().to_vec();
+    let m_vec = m.into_raw_vec();
+    let m_tensor = Tensor::from_data(TensorData::new(m_vec, m_shape), device);
+
+    (b_tensor, m_tensor)
+}
 async fn handle_move(
-    State(model): State<Arc<Mutex<Model>>>,
+    State(state): State<AppState>,
     Json(req): Json<GameMoveRequest>,
 ) -> Json<MoveResponse> {
 
-    //What to do in here now???
+    let model_kind = state.kind; 
+
     let (best_move, shout) = tokio::task::spawn_blocking(move || {
-        let (board_ndarray, metadata_ndarray) = preprocess(&req);
+        // 1. CPU WORK (No Lock)
+        let input_data = match model_kind {
+            ModelKind::Cnn => {
+                let (b, m) = preprocess(&req); 
+                PreprocessedData::Cnn { board: b, meta: m }
+            },
+            ModelKind::Transformer => {
+                let (t, m) = preprocess_transformer(&req); 
+                PreprocessedData::Transformer { tiles: t, meta: m }
+            }
+        };
 
-        // 1. Extract shape and raw data from ndarray
-        // .into_raw_vec() is zero-copy (it consumes the ndarray) and efficient.
-        // It works perfectly because your preprocess() creates contiguous arrays.
-        let board_shape = board_ndarray.shape().to_vec();
-        let board_vec = board_ndarray.into_raw_vec();
-        let board_data = TensorData::new(board_vec, board_shape);
-
-        let meta_shape = metadata_ndarray.shape().to_vec();
-        let meta_vec = metadata_ndarray.into_raw_vec();
-        let meta_data = TensorData::new(meta_vec, meta_shape);
-
+        // 2. INFERENCE (Lock)
+        let model = state.model.lock().expect("mutex poisoned");
         let device = Default::default();
-        let input1 = Tensor::<B, 4>::from_data(board_data, &device);
-        let input2 = Tensor::<B, 2>::from_data(meta_data, &device);
 
-        let model = model.lock().expect("mutex poisoned");
-        let output = model.forward(input1, input2);
+        let output = match (&*model, input_data) {
+            // TRANSFORMER CASE
+            (Model::Transformer(m), PreprocessedData::Transformer { tiles, meta }) => {
+                // Fix: Get shapes BEFORE into_raw_vec
+                let t_shape = tiles.shape().to_vec();
+                let t_vec = tiles.into_raw_vec();
+                
+                let m_shape = meta.shape().to_vec();
+                let m_vec = meta.into_raw_vec();
+
+                let t_tensor = Tensor::<B, 3>::from_data(
+                    TensorData::new(t_vec, t_shape), 
+                    &device
+                );
+                let m_tensor = Tensor::<B, 2>::from_data(
+                    TensorData::new(m_vec, m_shape), 
+                    &device
+                );
+                m.forward(t_tensor, m_tensor)
+            },
+            
+            // CNN CASES
+            (Model::Original(m), PreprocessedData::Cnn { board, meta }) => {
+                let (b, m_tens) = to_tensors(board, meta, &device);
+                m.forward(b, m_tens)
+            },
+            (Model::NoPool(m), PreprocessedData::Cnn { board, meta }) => {
+                let (b, m_tens) = to_tensors(board, meta, &device);
+                m.forward(b, m_tens)
+            },
+            (Model::Beef(m), PreprocessedData::Cnn { board, meta }) => {
+                let (b, m_tens) = to_tensors(board, meta, &device);
+                m.forward(b, m_tens)
+            },
+            (Model::BeefBeef(m), PreprocessedData::Cnn { board, meta }) => {
+                let (b, m_tens) = to_tensors(board, meta, &device);
+                m.forward(b, m_tens)
+            },
+            _ => panic!("Model / Data Mismatch!"),
+        };
 
         let best_idx = output.argmax(1).into_scalar() as usize;
         let moves = ["up", "right", "down", "left"];
-
-        (moves[best_idx].to_string(), "⛓️🥚⛓️".to_string())
+        (moves[best_idx].to_string(), "🤖".to_string())
     })
     .await
     .expect("Blocking task failed");
 
-    Json(MoveResponse {
-        r#move: best_move,
-        shout,
-    })
+    Json(MoveResponse { r#move: best_move, shout })
 }
 
 #[tokio::main]
@@ -275,53 +427,75 @@ async fn main() -> anyhow::Result<()> {
         })
         .unwrap_or_else(|_| "simple_cnn_opset16".to_string());
 
-    let model_enum = match model_choice.as_str() {
-        "nopool_overtrained_370k" => {
-            let m = ModelNoPool::from_file("nopool_overtrained_370k", &device);
-            Model::NoPool(m)
-        },
+    let (model_enum, kind) = match model_choice.as_str() {
         "nopool_1p1M" => { 
             let m = ModelNoPool::from_file("nopool_1p1M", &device);
-            Model::NoPool(m)
+            (Model::NoPool(m), ModelKind::Cnn)
         },
         "nopool_170k_toponly" => { 
             let m = ModelNoPool::from_file("nopool_170k_toponly", &device);
-            Model::NoPool(m)
+            (Model::NoPool(m), ModelKind::Cnn)
         },
         "withpool_170k_toponly" => {
             let m = ModelOriginal::from_file("withpool_170k_toponly", &device);
-            Model::Original(m)
+            (Model::Original(m), ModelKind::Cnn)
         },
         "v3beef_197kX" => { 
             let m = ModelBeefierCnn::from_file("v3beef_197kX", &device);
-            Model::Beef(m)
+            (Model::Beef(m), ModelKind::Cnn)
         }
         "v4beefbeef_232kX" => { 
             let m = ModelBeefBeef::from_file("v4beefbeef_232kX", &device);
-            Model::BeefBeef(m)
+            (Model::BeefBeef(m), ModelKind::Cnn)
         }
         "v4beefbeef_325kX" => { 
             let m = ModelBeefBeef::from_file("v4beefbeef_232kX", &device);
-            Model::BeefBeef(m)
+            (Model::BeefBeef(m), ModelKind::Cnn)
         }
         "simple_cnn_opset16" => { 
             let m = ModelOriginal::from_file("simple_cnn_opset16", &device);
-            Model::Original(m)
+            (Model::Original(m), ModelKind::Cnn)
+        },
+        "transformer_v1" => {
+             // MUST MATCH TRAINING CONFIG!
+             let config = BattleModelConfig {
+                d_model: 64,
+                n_heads: 4,
+                n_layers: 2,
+                d_ff: 256,
+                num_classes: 4,
+                tile_features: 22,
+                meta_features: 4,
+                grid_size: 11,
+             };
+             
+             // Load the record explicitly
+             let record = CompactRecorder::new()
+                .load("transformer_v1".into(), &device)
+                .expect("Failed to load transformer weights");
+             
+             // Init and load
+             let model = BattleModel::new(&config, &device).load_record(record);
+             
+             (Model::Transformer(model), ModelKind::Transformer)
         },
         _ => {
             println!("Unrecognized model choice, falling back to simple_cnn_opset16");
             let m = ModelOriginal::from_file("simple_cnn_opset16", &device);
-            Model::Original(m)
+            (Model::Original(m), ModelKind::Cnn)
         }
     };
 
-    // 5. Wrap in Arc/Mutex
-    let model = Arc::new(Mutex::new(model_enum));
+
+    let state = AppState {
+        model: Arc::new(Mutex::new(model_enum)),
+        kind,
+    };
 
     let app = Router::new()
         .route("/", get(handle_info))
         .route("/move", post(handle_move))
-        .with_state(model);
+        .with_state(state);
 
     let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await?;
     println!("Listening on http://0.0.0.0:3000");
