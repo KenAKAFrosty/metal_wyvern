@@ -16,9 +16,6 @@ use serde::{Deserialize, Serialize};
 
 use burn_ai_model::transformer::{BattleModel, BattleModelConfig};
 
-// ------------------------------------------------------------------
-// 1. Data Structures (Unchanged)
-// ------------------------------------------------------------------
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "PascalCase")]
 struct Position {
@@ -76,9 +73,6 @@ struct TrainingExample {
     winning_snake_id: String,
 }
 
-// ------------------------------------------------------------------
-// 2. Dataset (Unchanged)
-// ------------------------------------------------------------------
 #[derive(Clone)]
 struct BattlesnakeDataset {
     items: Vec<TrainingExample>,
@@ -122,10 +116,6 @@ fn load_data(db_path: &str) -> Vec<TrainingExample> {
     items
 }
 
-// ------------------------------------------------------------------
-// 3. Batcher (THE BIG REWRITE)
-// ------------------------------------------------------------------
-
 type MyBackend = Wgpu;
 type MyAutodiffBackend = Autodiff<MyBackend>;
 
@@ -136,28 +126,28 @@ struct BattlesnakeBatcher<B: Backend> {
 
 #[derive(Clone, Debug)]
 struct BattlesnakeBatch<B: Backend> {
-    // [Batch, 121, 22] - The sequence of tiles
+    // [Batch, 121, 22] - sequence of tiles
     tiles: Tensor<B, 3>,
-    // [Batch, 4] - The global metadata
+    // [Batch, 4] - global metadata
     metadata: Tensor<B, 2>,
     targets: Tensor<B, 1, Int>,
 }
 
 const GRID_SIZE: usize = 11;
-const SEQ_LEN: usize = GRID_SIZE * GRID_SIZE; // 121
-const TILE_FEATS: usize = 22;
-const META_FEATS: usize = 2;
+const SEQUENCE_LENGTH: usize = GRID_SIZE * GRID_SIZE;
+const TILE_FEATURE_COUNT: usize = 22;
+const META_FEATURE_COUNT: usize = 2;
 
-// Helper to set features in the flat vector
+// helper to set features in the flat vector
 // grid: flat vector of size 121 * 22
 // idx: 0..120 (tile index)
 // feat: 0..21 (feature index)
 // val: value to set
-fn set_feat(grid: &mut [f32], x: i32, y: i32, feat: usize, val: f32) {
+fn set_feature(grid: &mut [f32], x: i32, y: i32, feature: usize, value: f32) {
     if x >= 0 && x < GRID_SIZE as i32 && y >= 0 && y < GRID_SIZE as i32 {
         let tile_idx = (y as usize * GRID_SIZE) + x as usize;
-        let vec_idx = (tile_idx * TILE_FEATS) + feat;
-        grid[vec_idx] = val;
+        let vec_idx = (tile_idx * TILE_FEATURE_COUNT) + feature;
+        grid[vec_idx] = value;
     }
 }
 
@@ -165,8 +155,8 @@ impl<B: Backend> Batcher<B, TrainingExample, BattlesnakeBatch<B>> for Battlesnak
     fn batch(&self, items: Vec<TrainingExample>, device: &B::Device) -> BattlesnakeBatch<B> {
         let batch_size = items.len();
 
-        let mut tiles_data = Vec::with_capacity(batch_size * SEQ_LEN * TILE_FEATS);
-        let mut meta_data = Vec::with_capacity(batch_size * META_FEATS);
+        let mut tiles_data = Vec::with_capacity(batch_size * SEQUENCE_LENGTH * TILE_FEATURE_COUNT);
+        let mut meta_data = Vec::with_capacity(batch_size * META_FEATURE_COUNT);
         let mut targets_data = Vec::with_capacity(batch_size);
 
         for item in items {
@@ -174,18 +164,15 @@ impl<B: Backend> Batcher<B, TrainingExample, BattlesnakeBatch<B>> for Battlesnak
             let h = item.game.height as usize;
             let area = (w * h) as f32;
 
-            // 1. Prepare Tile Grid (Flat buffer)
-            let mut grid = vec![0.0f32; SEQ_LEN * TILE_FEATS];
+            let mut grid = vec![0.0f32; SEQUENCE_LENGTH * TILE_FEATURE_COUNT];
 
-            // Identify "Me" and "Them"
-            let target_id = &item.winning_snake_id; // We train to mimic the winner
+            let target_id = &item.winning_snake_id;
             let mut my_snake: Option<&Snake> = None;
             let mut enemies: Vec<&Snake> = Vec::new();
-
             for snake in &item.snakes {
                 if snake.death.is_some() {
                     continue;
-                } // Skip dead
+                }
                 if snake.id == *target_id {
                     my_snake = Some(snake);
                 } else {
@@ -193,34 +180,27 @@ impl<B: Backend> Batcher<B, TrainingExample, BattlesnakeBatch<B>> for Battlesnak
                 }
             }
 
-            // --- Fill "Me" Features (Indices 0-4) ---
             if let Some(me) = my_snake {
                 let norm_health = me.health as f32 / 100.0;
                 let norm_len = me.body.len() as f32 / area;
 
-                // Head (Idx 0)
                 if !me.body.is_empty() {
-                    set_feat(&mut grid, me.body[0].x, me.body[0].y, 0, 1.0);
-                    // Holographic stats on Head
-                    set_feat(&mut grid, me.body[0].x, me.body[0].y, 3, norm_health);
-                    set_feat(&mut grid, me.body[0].x, me.body[0].y, 4, norm_len);
+                    set_feature(&mut grid, me.body[0].x, me.body[0].y, 0, 1.0);
+                    set_feature(&mut grid, me.body[0].x, me.body[0].y, 3, norm_health);
+                    set_feature(&mut grid, me.body[0].x, me.body[0].y, 4, norm_len);
                 }
 
-                // Body (Idx 1) & Tail (Idx 2)
                 for (i, part) in me.body.iter().enumerate().skip(1) {
                     let is_tail = i == me.body.len() - 1;
                     let feat_idx = if is_tail { 2 } else { 1 };
 
-                    set_feat(&mut grid, part.x, part.y, feat_idx, 1.0);
-                    // Holographic stats on Body parts too!
-                    set_feat(&mut grid, part.x, part.y, 3, norm_health);
-                    set_feat(&mut grid, part.x, part.y, 4, norm_len);
+                    set_feature(&mut grid, part.x, part.y, feat_idx, 1.0);
+                    set_feature(&mut grid, part.x, part.y, 3, norm_health);
+                    set_feature(&mut grid, part.x, part.y, 4, norm_len);
                 }
             }
 
-            // --- Fill "Enemy" Features (Indices 5-19) ---
-            // We support up to 3 enemies.
-            // Sort enemies by ID to ensure consistency across frames
+            // we support up to 3 enemies. sort enemies by ID to ensure consistency across frames
             enemies.sort_by_key(|s| &s.id);
 
             for (i, enemy) in enemies.iter().take(3).enumerate() {
@@ -228,17 +208,16 @@ impl<B: Backend> Batcher<B, TrainingExample, BattlesnakeBatch<B>> for Battlesnak
                 let norm_health = enemy.health as f32 / 100.0;
                 let norm_len = enemy.body.len() as f32 / area;
 
-                // Head
                 if !enemy.body.is_empty() {
-                    set_feat(&mut grid, enemy.body[0].x, enemy.body[0].y, offset + 0, 1.0);
-                    set_feat(
+                    set_feature(&mut grid, enemy.body[0].x, enemy.body[0].y, offset + 0, 1.0);
+                    set_feature(
                         &mut grid,
                         enemy.body[0].x,
                         enemy.body[0].y,
                         offset + 3,
                         norm_health,
                     );
-                    set_feat(
+                    set_feature(
                         &mut grid,
                         enemy.body[0].x,
                         enemy.body[0].y,
@@ -246,44 +225,40 @@ impl<B: Backend> Batcher<B, TrainingExample, BattlesnakeBatch<B>> for Battlesnak
                         norm_len,
                     );
                 }
-                // Body/Tail
+
                 for (j, part) in enemy.body.iter().enumerate().skip(1) {
                     let is_tail = j == enemy.body.len() - 1;
                     let feat_idx = if is_tail { offset + 2 } else { offset + 1 };
-                    set_feat(&mut grid, part.x, part.y, feat_idx, 1.0);
-                    set_feat(&mut grid, part.x, part.y, offset + 3, norm_health);
-                    set_feat(&mut grid, part.x, part.y, offset + 4, norm_len);
+                    set_feature(&mut grid, part.x, part.y, feat_idx, 1.0);
+                    set_feature(&mut grid, part.x, part.y, offset + 3, norm_health);
+                    set_feature(&mut grid, part.x, part.y, offset + 4, norm_len);
                 }
             }
 
-            // --- Food (Idx 20) ---
-            for f in &item.food {
-                set_feat(&mut grid, f.x, f.y, 20, 1.0);
+            for food in &item.food {
+                set_feature(&mut grid, food.x, food.y, 20, 1.0);
             }
 
-            // --- Hazards (Idx 21) ---
-            for hz in &item.hazards {
-                set_feat(&mut grid, hz.x, hz.y, 21, 1.0);
+            for hazard in &item.hazards {
+                set_feature(&mut grid, hazard.x, hazard.y, 21, 1.0);
             }
 
             tiles_data.extend(grid);
 
-            // 2. Prepare Metadata (4 floats)
-            // [Turn, SpawnChance, MinFood, HazardDamage]
-            let fs_chance: f32 = item.game.ruleset.food_spawn_chance.parse().unwrap_or(15.0);
+            let food_spawn_chance: f32 =
+                item.game.ruleset.food_spawn_chance.parse().unwrap_or(15.0);
             let min_food: f32 = item.game.ruleset.minimum_food.parse().unwrap_or(1.0);
 
-            meta_data.push(fs_chance / 100.0);
+            meta_data.push(food_spawn_chance / 100.0);
             meta_data.push(min_food / area);
 
             targets_data.push(item.label as i32);
         }
 
-        // Create Tensors
-        let tiles_shape = [batch_size, SEQ_LEN, TILE_FEATS];
+        let tiles_shape = [batch_size, SEQUENCE_LENGTH, TILE_FEATURE_COUNT];
         let tiles = Tensor::from_data(TensorData::new(tiles_data, tiles_shape), &self.device);
 
-        let meta_shape = [batch_size, META_FEATS];
+        let meta_shape = [batch_size, META_FEATURE_COUNT];
         let metadata = Tensor::from_data(TensorData::new(meta_data, meta_shape), &self.device);
 
         let targets = Tensor::from_data(TensorData::new(targets_data, [batch_size]), &self.device);
@@ -296,15 +271,10 @@ impl<B: Backend> Batcher<B, TrainingExample, BattlesnakeBatch<B>> for Battlesnak
     }
 }
 
-// ------------------------------------------------------------------
-// 4. Train Step (Updated signature)
-// ------------------------------------------------------------------
-
 impl<B: AutodiffBackend> TrainStep<BattlesnakeBatch<B>, ClassificationOutput<B>>
     for BattleModel<B>
 {
     fn step(&self, batch: BattlesnakeBatch<B>) -> TrainOutput<ClassificationOutput<B>> {
-        // Forward pass now takes (Tiles, Meta)
         let logits = self.forward(batch.tiles, batch.metadata);
 
         let loss = burn::nn::loss::CrossEntropyLossConfig::new()
@@ -341,48 +311,36 @@ impl<B: Backend> ValidStep<BattlesnakeBatch<B>, ClassificationOutput<B>> for Bat
     }
 }
 
-// ------------------------------------------------------------------
-// 5. Main
-// ------------------------------------------------------------------
-
 #[tokio::main]
 async fn main() {
     let device = WgpuDevice::default();
 
-    // --- HYPERPARAMETERS ---
-    let batch_size = 64;
-    let learning_rate = 1e-4;
+    let batch_size = 128;
+    let learning_rate = 2e-4;
     let num_epochs = 30;
 
-    // Define Model Config
     let config = BattleModelConfig {
         d_model: 64, // Embedding size
-        d_ff: 256,   // Feed forward inner dimension
+        d_ff: 128,   // Feed forward inner dimension
         n_heads: 4,  // Attention heads
-        n_layers: 6, // Think of these as reasoning/strategy layers
+        n_layers: 2,
         num_classes: 4,
         tile_features: 22, // Match Batcher
         meta_features: 2,  // Match Batcher
         grid_size: 11,
 
-        head_compress_size: 256,
+        head_compress_size: 512,
         head_expand_size: 1024,
     };
 
-    println!("Initializing Holographic Transformer...");
-    println!("Config: {:?}", config);
-
-    // Initialize Model
     let model: BattleModel<MyAutodiffBackend> = BattleModel::new(&config, &device);
     let optimizer = AdamWConfig::new().init();
 
-    // Load Data
     let mut all_data = load_data("../battlesnake_data.db");
     if all_data.len() <= batch_size {
         panic!("Not enough data!");
     }
 
-    // Split Val
     let valid_data = all_data.split_off(all_data.len() - batch_size);
     let train_data = all_data;
 
