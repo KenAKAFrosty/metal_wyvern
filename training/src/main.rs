@@ -320,17 +320,17 @@ async fn main() {
     let num_epochs = 30;
 
     let config = BattleModelConfig {
-        d_model: 64, // Embedding size
-        d_ff: 128,   // Feed forward inner dimension
-        n_heads: 4,  // Attention heads
+        d_model: 32, // Embedding size
+        d_ff: 64,    // Feed forward inner dimension
+        n_heads: 2,  // Attention heads
         n_layers: 2,
         num_classes: 4,
         tile_features: 22, // Match Batcher
         meta_features: 2,  // Match Batcher
         grid_size: 11,
 
-        head_compress_size: 512,
-        head_expand_size: 1024,
+        head_compress_size: 256,
+        head_expand_size: 512,
     };
 
     let model: BattleModel<MyAutodiffBackend> = BattleModel::new(&config, &device);
