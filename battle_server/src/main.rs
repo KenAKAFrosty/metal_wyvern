@@ -219,7 +219,7 @@ fn preprocess(req: &GameMoveRequest) -> (Array4<f32>, Array2<f32>) {
 const GRID_SIZE: usize = 11;
 const SEQ_LEN: usize = 121;
 const TILE_FEATS: usize = 22;
-const META_FEATS: usize = 4;
+const META_FEATS: usize = 2;
 
 // Helper to set features safely
 fn set_feat(grid: &mut [f32], x: i32, y: i32, feat: usize, val: f32) {
