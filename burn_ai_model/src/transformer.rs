@@ -10,13 +10,13 @@ use burn::{
 
 #[derive(Config, Debug)]
 pub struct BattleModelConfig {
-    #[config(default = 64)]
-    pub d_model: usize,
     #[config(default = 256)]
+    pub d_model: usize,
+    #[config(default = 1024)]
     pub d_ff: usize,
     #[config(default = 4)]
     pub n_heads: usize,
-    #[config(default = 3)]
+    #[config(default = 6)]
     pub n_layers: usize,
     #[config(default = 4)]
     pub num_classes: usize,
@@ -33,12 +33,14 @@ pub struct BattleModel<B: Backend> {
     tile_projection: Linear<B>,
     pos_projection: Linear<B>,
 
-    // NEW: Project global stats (4 floats) -> Embedding (64 floats)
     meta_projection: Linear<B>,
 
     cls_token: Param<Tensor<B, 2>>,
     transformer: TransformerEncoder<B>,
     output_head: Linear<B>,
+
+    head_hidden: Linear<B>,
+    head_output: Linear<B>,
 
     grid_size: usize,
 }
@@ -65,6 +67,10 @@ impl<B: Backend> BattleModel<B> {
 
         let output_head = LinearConfig::new(d_model, config.num_classes).init(device);
 
+        let head_hidden_size = d_model * 2;
+        let head_hidden = LinearConfig::new(d_model, head_hidden_size).init(device);
+        let head_output = LinearConfig::new(head_hidden_size, config.num_classes).init(device);
+
         Self {
             tile_projection,
             pos_projection,
@@ -72,6 +78,8 @@ impl<B: Backend> BattleModel<B> {
             cls_token,
             transformer,
             output_head,
+            head_hidden,
+            head_output,
             grid_size: config.grid_size,
         }
     }
@@ -110,7 +118,9 @@ impl<B: Backend> BattleModel<B> {
         // 6. Output (Take Index 0, the CLS token)
         let cls_out = encoded.slice([0..batch_size, 0..1]).squeeze_dim(1);
 
-        self.output_head.forward(cls_out)
+        let hidden = self.head_hidden.forward(cls_out);
+        let hidden = relu(hidden);
+        self.head_output.forward(hidden)
     }
 
     fn generate_pos_grid(&self, batch_size: usize, device: &B::Device) -> Tensor<B, 3> {

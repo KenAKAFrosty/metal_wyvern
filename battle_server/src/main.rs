@@ -428,10 +428,6 @@ async fn main() -> anyhow::Result<()> {
         .unwrap_or_else(|_| "simple_cnn_opset16".to_string());
 
     let (model_enum, kind) = match model_choice.as_str() {
-        "nopool_1p1M" => { 
-            let m = ModelNoPool::from_file("nopool_1p1M", &device);
-            (Model::NoPool(m), ModelKind::Cnn)
-        },
         "nopool_170k_toponly" => { 
             let m = ModelNoPool::from_file("nopool_170k_toponly", &device);
             (Model::NoPool(m), ModelKind::Cnn)
@@ -459,10 +455,10 @@ async fn main() -> anyhow::Result<()> {
         "transformer_v1" => {
              // MUST MATCH TRAINING CONFIG!
              let config = BattleModelConfig {
-                d_model: 64,
-                n_heads: 4,
-                n_layers: 2,
-                d_ff: 256,
+                d_model: 256, 
+                d_ff: 1024, 
+                n_heads: 8,   
+                n_layers: 6,
                 num_classes: 4,
                 tile_features: 22,
                 meta_features: 4,

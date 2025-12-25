@@ -352,16 +352,16 @@ async fn main() {
     let device = WgpuDevice::default();
 
     // --- HYPERPARAMETERS ---
-    let batch_size = 1024;
-    let learning_rate = 9e-4;
-    let num_epochs = 100;
+    let batch_size = 64;
+    let learning_rate = 1e-4;
+    let num_epochs = 30;
 
     // Define Model Config
     let config = BattleModelConfig {
-        d_model: 64, // Embedding size (Start small)
-        n_heads: 4,  // Attention heads
-        n_layers: 2, // Transformer layers
-        d_ff: 256,   // Feed forward inner dimension
+        d_model: 256, // Embedding size (Start small)
+        d_ff: 1024,   // Feed forward inner dimension
+        n_heads: 8,   // Attention heads
+        n_layers: 6,  // Transformer layers
         num_classes: 4,
         tile_features: 22, // Match Batcher
         meta_features: 4,  // Match Batcher
