@@ -146,7 +146,7 @@ struct BattlesnakeBatch<B: Backend> {
 const GRID_SIZE: usize = 11;
 const SEQ_LEN: usize = GRID_SIZE * GRID_SIZE; // 121
 const TILE_FEATS: usize = 22;
-const META_FEATS: usize = 4;
+const META_FEATS: usize = 2;
 
 // Helper to set features in the flat vector
 // grid: flat vector of size 121 * 22
@@ -273,10 +273,8 @@ impl<B: Backend> Batcher<B, TrainingExample, BattlesnakeBatch<B>> for Battlesnak
             let fs_chance: f32 = item.game.ruleset.food_spawn_chance.parse().unwrap_or(15.0);
             let min_food: f32 = item.game.ruleset.minimum_food.parse().unwrap_or(1.0);
 
-            meta_data.push((item.turn as f32 / 500.0).min(1.0)); // Turn normalized
             meta_data.push(fs_chance / 100.0);
             meta_data.push(min_food / area);
-            meta_data.push(0.14); // Assume 14 hazard damage (standard) normalized
 
             targets_data.push(item.label as i32);
         }
@@ -358,14 +356,17 @@ async fn main() {
 
     // Define Model Config
     let config = BattleModelConfig {
-        d_model: 256, // Embedding size (Start small)
-        d_ff: 1024,   // Feed forward inner dimension
-        n_heads: 8,   // Attention heads
-        n_layers: 6,  // Transformer layers
+        d_model: 64, // Embedding size
+        d_ff: 256,   // Feed forward inner dimension
+        n_heads: 4,  // Attention heads
+        n_layers: 6, // Think of these as reasoning/strategy layers
         num_classes: 4,
         tile_features: 22, // Match Batcher
-        meta_features: 4,  // Match Batcher
+        meta_features: 2,  // Match Batcher
         grid_size: 11,
+
+        head_compress_size: 256,
+        head_expand_size: 1024,
     };
 
     println!("Initializing Holographic Transformer...");

@@ -293,10 +293,8 @@ fn preprocess_transformer(req: &GameMoveRequest) -> (Array3<f32>, Array2<f32>) {
     let min_food = req.game.ruleset.settings.minimum_food as f32;
     
     let meta_vec = vec![
-        (req.turn as f32 / 500.0).min(1.0),
         fs_chance / 100.0,
         min_food / area,
-        0.14 // Hazard damage default
     ];
 
     let tiles_array = Array3::from_shape_vec((1, SEQ_LEN, TILE_FEATS), grid).unwrap();
@@ -454,16 +452,20 @@ async fn main() -> anyhow::Result<()> {
         },
         "transformer_v1" => {
              // MUST MATCH TRAINING CONFIG!
-             let config = BattleModelConfig {
-                d_model: 256, 
-                d_ff: 1024, 
-                n_heads: 8,   
-                n_layers: 6,
+            let config = BattleModelConfig {
+                d_model: 64, // Embedding size
+                d_ff: 256,   // Feed forward inner dimension
+                n_heads: 4,  // Attention heads
+                n_layers: 6, // Think of these as reasoning/strategy layers
                 num_classes: 4,
-                tile_features: 22,
-                meta_features: 4,
+                tile_features: 22, // Match Batcher
+                meta_features: 2,  // Match Batcher
                 grid_size: 11,
-             };
+
+                head_compress_size: 256,
+                head_expand_size: 1024,
+            };
+
              
              // Load the record explicitly
              let record = CompactRecorder::new()
