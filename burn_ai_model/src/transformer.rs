@@ -23,11 +23,6 @@ pub struct BattleModelConfig {
     pub meta_features: usize,
     #[config(default = 11)] // Standard board size
     pub grid_size: usize,
-
-    #[config(default = 256)]
-    pub head_compress_size: usize,
-    #[config(default = 1024)]
-    pub head_expand_size: usize,
 }
 
 #[derive(Module, Debug)]
@@ -38,11 +33,7 @@ pub struct BattleModel<B: Backend> {
 
     transformer: TransformerEncoder<B>,
 
-    // The Funnel MLP Head
-    head_compress: Linear<B>, // Step 1: Compress huge flat vector
-    head_expand: Linear<B>,   // Step 2: Expand to strategy space
-    head_output: Linear<B>,   // Step 3: Decision
-
+    output: Linear<B>, // Decision making, tiles -> output 4 classes
     grid_size: usize,
     d_model: usize,
 }
@@ -68,27 +59,17 @@ impl<B: Backend> BattleModel<B> {
         // We will concatenate the Metadata Embedding (size 64) to this
         let mlp_input_size = flat_board_size + d_model;
 
-        // 4. The Funnel Head (Brain)
-        // Stage A: Compress (7808 -> 256)
-        let head_compress =
-            LinearConfig::new(mlp_input_size, config.head_compress_size).init(device);
-        // Stage B: Strategy Expand (256 -> 1024)
-        let head_expand =
-            LinearConfig::new(config.head_compress_size, config.head_expand_size).init(device);
         // Stage C: Output (1024 -> 4)
-        let head_output =
-            LinearConfig::new(config.head_expand_size, config.num_classes).init(device);
+        let output = LinearConfig::new(mlp_input_size, config.num_classes).init(device);
 
         Self {
             tile_projection,
             pos_projection,
             meta_projection,
             transformer,
-            head_compress,
-            head_expand,
-            head_output,
             grid_size: config.grid_size,
             d_model,
+            output,
         }
     }
 
@@ -109,23 +90,15 @@ impl<B: Backend> BattleModel<B> {
         let encoded = self.transformer.forward(TransformerEncoderInput::new(x));
 
         // [Batch, 121, 64] -> [Batch, 7744]
-        // Merge dimension 1 (121) through dimension 2 (64)
+        // Merge dimension 1 (121 tiles) through dimension 2 (d_model size)
         let flattened_board = encoded.flatten(1, 2);
 
-        // 4. Embed Metadata [Batch, 2] -> [Batch, 64]
+        // 4. Embed Metadata [Batch, 2] -> [Batch, d_model size]
         let meta_embed = self.meta_projection.forward(metadata);
 
-        // 5. Concatenate [Board (7744) + Meta (64)] -> [Batch, 7808]
         let mlp_input = Tensor::cat(vec![flattened_board, meta_embed], 1);
 
-        // 6. MLP Funnel
-        let h = self.head_compress.forward(mlp_input);
-        let h = relu(h);
-
-        let h = self.head_expand.forward(h);
-        let h = relu(h);
-
-        self.head_output.forward(h)
+        self.output.forward(mlp_input)
     }
 
     fn generate_pos_grid(&self, batch_size: usize, device: &B::Device) -> Tensor<B, 3> {

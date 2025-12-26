@@ -453,17 +453,14 @@ async fn main() -> anyhow::Result<()> {
         "transformer_v1" => {
              // MUST MATCH TRAINING CONFIG!
             let config = BattleModelConfig {
-                d_model: 32, // Embedding size
-                d_ff: 64,    // Feed forward inner dimension
-                n_heads: 2,  // Attention heads
+                d_model: 512, // Embedding size
+                d_ff: 256,    // Feed forward inner dimension
+                n_heads: 4,   // Attention heads
                 n_layers: 2,
                 num_classes: 4,
                 tile_features: 22, // Match Batcher
                 meta_features: 2,  // Match Batcher
                 grid_size: 11,
-
-                head_compress_size: 256,
-                head_expand_size: 512,
             };
 
              

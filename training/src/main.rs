@@ -315,22 +315,19 @@ impl<B: Backend> ValidStep<BattlesnakeBatch<B>, ClassificationOutput<B>> for Bat
 async fn main() {
     let device = WgpuDevice::default();
 
-    let batch_size = 128;
-    let learning_rate = 2e-4;
+    let batch_size = 32;
+    let learning_rate = 2e-5;
     let num_epochs = 30;
 
     let config = BattleModelConfig {
-        d_model: 32, // Embedding size
-        d_ff: 64,    // Feed forward inner dimension
-        n_heads: 2,  // Attention heads
+        d_model: 512, // Embedding size
+        d_ff: 256,    // Feed forward inner dimension
+        n_heads: 4,   // Attention heads
         n_layers: 2,
         num_classes: 4,
         tile_features: 22, // Match Batcher
         meta_features: 2,  // Match Batcher
         grid_size: 11,
-
-        head_compress_size: 256,
-        head_expand_size: 512,
     };
 
     let model: BattleModel<MyAutodiffBackend> = BattleModel::new(&config, &device);
