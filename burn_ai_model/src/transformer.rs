@@ -60,7 +60,7 @@ impl<B: Backend> BattleModel<B> {
         let mlp_input_size = flat_board_size + d_model;
 
         // Stage C: Output (1024 -> 4)
-        let output = LinearConfig::new(mlp_input_size, config.num_classes).init(device);
+        let output = LinearConfig::new(d_model * 2, config.num_classes).init(device);
 
         Self {
             tile_projection,
@@ -89,14 +89,12 @@ impl<B: Backend> BattleModel<B> {
         // Note: No CLS token, no Metadata in the sequence. Just the board.
         let encoded = self.transformer.forward(TransformerEncoderInput::new(x));
 
-        // [Batch, 121, 64] -> [Batch, 7744]
-        // Merge dimension 1 (121 tiles) through dimension 2 (d_model size)
-        let flattened_board = encoded.flatten(1, 2);
+        let pooled = encoded.mean_dim(1).squeeze_dim(1);
 
         // 4. Embed Metadata [Batch, 2] -> [Batch, d_model size]
         let meta_embed = self.meta_projection.forward(metadata);
 
-        let mlp_input = Tensor::cat(vec![flattened_board, meta_embed], 1);
+        let mlp_input = Tensor::cat(vec![pooled, meta_embed], 1);
 
         self.output.forward(mlp_input)
     }

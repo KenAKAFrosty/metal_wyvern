@@ -454,9 +454,9 @@ async fn main() -> anyhow::Result<()> {
              // MUST MATCH TRAINING CONFIG!
             let config = BattleModelConfig {
                 d_model: 512, // Embedding size
-                d_ff: 256,    // Feed forward inner dimension
-                n_heads: 4,   // Attention heads
-                n_layers: 2,
+                d_ff: 2048,   // Feed forward inner dimension
+                n_heads: 8,   // Attention heads. rule of thumb is d_model / 64 = n_heads
+                n_layers: 6,
                 num_classes: 4,
                 tile_features: 22, // Match Batcher
                 meta_features: 2,  // Match Batcher

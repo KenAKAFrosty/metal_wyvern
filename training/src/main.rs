@@ -315,15 +315,15 @@ impl<B: Backend> ValidStep<BattlesnakeBatch<B>, ClassificationOutput<B>> for Bat
 async fn main() {
     let device = WgpuDevice::default();
 
-    let batch_size = 32;
-    let learning_rate = 2e-5;
-    let num_epochs = 30;
+    let batch_size = 64;
+    let learning_rate = 3e-5;
+    let num_epochs = 100; //overshoot by a ton so we can just do a graceful early stop that will still save the model after whereever we stop
 
     let config = BattleModelConfig {
         d_model: 512, // Embedding size
-        d_ff: 256,    // Feed forward inner dimension
-        n_heads: 4,   // Attention heads
-        n_layers: 2,
+        d_ff: 2048,   // Feed forward inner dimension
+        n_heads: 8,   // Attention heads. rule of thumb is d_model / 64 = n_heads
+        n_layers: 6,
         num_classes: 4,
         tile_features: 22, // Match Batcher
         meta_features: 2,  // Match Batcher
